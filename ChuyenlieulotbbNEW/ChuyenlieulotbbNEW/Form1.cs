@@ -1,24 +1,36 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Data;
-using System.Drawing;
-using System.Globalization;
 using System.Linq;
-using System.Net;
 using System.Net.Mail;
 using System.Net.NetworkInformation;
-using System.Reflection.Emit;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows.Forms;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement.TaskbarClock;
 
 namespace ChuyenlieulotbbNEW
 {
     public partial class Form1 : Form
     {
+        private const string TodayFormat = "yyyyMMdd";
+        private const string ShortDateFormat = "yyMMdd";
+        private const string LotDateFormat = "MMdd";
+        private const string OilNoData = "Oil no data available";
+
+        private static readonly string[] MachineIpAddresses =
+        {
+            "198.1.8.21",
+            "198.1.8.22",
+            "198.1.8.23",
+            "198.1.8.24",
+            "198.1.8.35",
+            "198.1.8.36",
+            "198.1.8.37",
+            "198.1.8.38",
+            "198.1.8.16",
+            "198.1.8.17",
+            "198.1.8.15",
+            "198.1.8.18"
+        };
 
         public Form1()
         {
@@ -58,7 +70,6 @@ namespace ChuyenlieulotbbNEW
 
         };
         DataTable dataMail = datatableMail();
-        private Ping ping = new Ping();
 
 
 
@@ -76,8 +87,8 @@ namespace ChuyenlieulotbbNEW
             DataColumn prodat = new DataColumn("Ngày", typeof(string));
             myTable.Columns.Add(prodat);
 
-            DataColumn soluong = new DataColumn("Số dòng insert ", typeof(string));
-            myTable.Columns.Add(soluong);
+            DataColumn soLuong = new DataColumn("Số dòng insert ", typeof(string));
+            myTable.Columns.Add(soLuong);
 
             return myTable;
 
@@ -103,6 +114,111 @@ namespace ChuyenlieulotbbNEW
                     return false;
                 }
             }
+        }
+
+        private string GetConnectionString(string key)
+        {
+            cnnstr.TryGetValue(key, out string connectionString);
+            return connectionString;
+        }
+
+        private static string GetMachineCode(string ip)
+        {
+            if (ip.EndsWith("16"))
+                return "V11";
+            if (ip.EndsWith("17"))
+                return "V12";
+            if (ip.EndsWith("15"))
+                return "V13";
+            if (ip.EndsWith("18"))
+                return "V14";
+
+            return "V-BB370" + ip[ip.Length - 1];
+        }
+
+        private void AddMailRow(string may, string status, string prodat, int count)
+        {
+            dataMail.Rows.Add(may, status, prodat, count.ToString());
+        }
+
+        private static string BuildSqlIn(IEnumerable<string> values)
+        {
+            List<string> items = values.Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
+            return items.Count > 0
+                ? "('" + string.Join("','", items) + "')"
+                : "()";
+        }
+
+        private static string GetRubberLevel(string barcode, int? ptype)
+        {
+            if (ptype.GetValueOrDefault() == 1)
+            {
+                return "8";
+            }
+
+            if (ptype.GetValueOrDefault() == 2)
+            {
+                return "7";
+            }
+
+            if (ptype.HasValue)
+            {
+                return "";
+            }
+
+            if (barcode.Substring(0, 2) == "RR" || barcode.Substring(0, 2) == "RD")
+            {
+                return "5";
+            }
+
+            if (barcode.Substring(0, 2) == "RC")
+            {
+                return "6";
+            }
+
+            return "8";
+        }
+
+        private static string BuildMaterialQuery(string planId, string sqlIn, bool includeMaterType)
+        {
+            string materTypeColumn = includeMaterType
+                ? ", b.Mater_Type "
+                : " ";
+            string oilMaterialCondition = includeMaterType
+                ? " AND (Mater_Code NOT LIKE '60%' OR (Mater_Code LIKE '60%' AND (Mater_Code = Mater_Name OR Mater_Type = 1))) "
+                : "  AND (     Mater_Code NOT LIKE '60%'     OR (Mater_Code LIKE '60%' AND Mater_Code = Mater_Name)   ) ";
+
+            return
+                "WITH ranked_b AS ( " +
+                "  SELECT b.*, ROW_NUMBER() OVER ( " +
+                "    PARTITION BY b.Barcode, b.mater_code, b.Mater_Type " +
+                "    ORDER BY b.SaveTime DESC ) as rn " +
+                "  FROM [mfns].[dbo].[Ppt_BarCodeRep] b " +
+                "  WHERE b.Plan_ID = '" + planId + "' " +
+                "    AND SUBSTRING(b.mater_code, 1, 3) <> '680' " +
+                "), " +
+                "filtered_b AS ( " +
+                "  SELECT * FROM ranked_b WHERE rn = 1 " +
+                "), " +
+                "c AS ( " +
+                "  SELECT " +
+                "    b.Mater_Barcode, " +
+                "    b.Mater_Code, " +
+                "    a.real_weight, " +
+                "    CONVERT(varchar, CONVERT(date, b.SaveTime), 120) AS DateColumn, " +
+                "    CONVERT(varchar, CONVERT(time, b.SaveTime), 108) AS TimeColumnq, " +
+                "    b.Serial_Num, a.Barcode, b.Mater_Name, b.SaveTime" + materTypeColumn +
+                "  FROM [mfns].[dbo].[ppt_weigh] a " +
+                "  LEFT JOIN filtered_b b ON a.barcode = b.Barcode " +
+                "    AND b.mater_code = a.mater_code " +
+                "    AND a.weight_id = b.Mater_Type " +
+                "  WHERE a.barcode IS NOT NULL " +
+                ") " +
+                "SELECT DISTINCT * FROM c " +
+                "WHERE Mater_Barcode IS NOT NULL " +
+                oilMaterialCondition +
+                "  AND Serial_Num IN " + sqlIn + " " +
+                "ORDER BY SaveTime;";
         }
 
         private void Form1_Load(object sender, EventArgs e)
@@ -211,35 +327,21 @@ namespace ChuyenlieulotbbNEW
 
             //string[] ipAddresses = {  "198.1.8.16", "198.1.8.17", "198.1.8.15", "198.1.8.18" };
 
-             string[] ipAddresses = { "198.1.8.21", "198.1.8.22", "198.1.8.23", "198.1.8.24", "198.1.8.35", "198.1.8.36", "198.1.8.37", "198.1.8.38", "198.1.8.16", "198.1.8.17", "198.1.8.15", "198.1.8.18" };
-
-
-
             //string[] ipAddresses = { "198.1.8.21", "198.1.8.22", "198.1.8.23", "198.1.8.24", "198.1.8.35", "198.1.8.36", "198.1.8.37", "198.1.8.38" };
             //string[] ipAddresses = { "198.1.8.18" };
 
             #region coment trước khi bù liệu
 
-            string prodat1 = DateTime.Now.AddDays(-1.0).ToString("yyyyMMdd");
+            string prodat1 = DateTime.Now.AddDays(-1.0).ToString(TodayFormat);
             string sqlDeletekeochuyentruoc = " delete  [P8400].[dbo].[LOT_PCR] where LEFT(pd_barcode, 2) IN ('RD', 'RR', 'RB', 'RC') and pd_date ='" + prodat1 + "'";
-            cnnstr.TryGetValue("34", out string cnnInsert34);
+            string cnnInsert34 = GetConnectionString("34");
             bool dellete1 = SqlCnn.ExecuteNonQuery(sqlDeletekeochuyentruoc, cnnInsert34);
             #endregion
 
 
-            foreach (string ip in ipAddresses)
+            foreach (string ip in MachineIpAddresses)
             {
-                string code = "";
-                if (ip.EndsWith("16"))
-                    code = "V11";
-                else if (ip.EndsWith("17"))
-                    code = "V12";
-                else if (ip.EndsWith("15"))
-                    code = "V13";
-                else if (ip.EndsWith("18"))
-                    code = "V14";
-                else
-                    code = "V-BB370" + ip[ip.Length - 1];
+                string code = GetMachineCode(ip);
 
                 if (PingHost(ip))
                 {
@@ -255,14 +357,14 @@ namespace ChuyenlieulotbbNEW
                 }
                 else
                 {
-                    dataMail.Rows.Add(code, "Máy tắt", DateTime.Now.ToString("yyyyMMdd"), "0");
+                    AddMailRow(code, "Máy tắt", DateTime.Now.ToString(TodayFormat), 0);
                 }
             }
 
 
 
 
-            mail_Chuyenlieulot(dataMail, DateTime.Now.ToString("yyyyMMdd"));
+            mail_Chuyenlieulot(dataMail, DateTime.Now.ToString(TodayFormat));
 
 
             Application.Exit();
@@ -275,15 +377,15 @@ namespace ChuyenlieulotbbNEW
             {
                 int dem = 0;
                 string sql_insertHC = "";
-                string prodat1 = DateTime.Now.AddDays(-1).ToString("yyMMdd");
+                string prodat1 = DateTime.Now.AddDays(-1).ToString(ShortDateFormat);
                 //prodat1 = "260101";
-                string prodatsolo = DateTime.Now.AddDays(-1).ToString("MMdd");
-                string prodat = DateTime.Now.AddDays(-1).ToString("yyyyMMdd");
+                string prodatsolo = DateTime.Now.AddDays(-1).ToString(LotDateFormat);
+                string prodat = DateTime.Now.AddDays(-1).ToString(TodayFormat);
                 string planProdat = may + prodat1;
                 // planProdat = may + "24043";
                 string mesSQL = "select Plan_Id,Recipe_Code,Equip_Code, CONVERT(varchar, CONVERT(date, Start_Date), 120) AS DateColumn,CONVERT(varchar, CONVERT(time, Start_Date), 108) AS TimeColumn,Start_Date" +
                     ",Weight_Man   FROM [CWSS_S7].[dbo].[LR_plan] where Plan_Id like '" + planProdat + "%'";
-                cnnstr.TryGetValue(may, out string cnnMay);
+                string cnnMay = GetConnectionString(may);
                 DataTable dataMessql = SqlCnn.ExecuteQuery(mesSQL, cnnMay);
                 if (dataMessql.Rows.Count > 0)
                 {
@@ -377,31 +479,31 @@ namespace ChuyenlieulotbbNEW
                         catch { continue; }
 
                     }
-                    cnnstr.TryGetValue("34", out string cnnInsert34);
+                    string cnnInsert34 = GetConnectionString("34");
                     bool a = SqlCnn.ExecuteNonQuery(sql_insertHC, cnnInsert34);
-                    cnnstr.TryGetValue("4", out string cnnInsert4);
+                    string cnnInsert4 = GetConnectionString("4");
                     bool b = SqlCnn.ExecuteNonQuery(sql_insertHC, cnnInsert4);
 
 
                     if (a && b)
                     {
-                        dataMail.Rows.Add(may, "Thành công máy hóa chất ", prodat, dem.ToString());
+                        AddMailRow(may, "Thành công máy hóa chất ", prodat, dem);
                     }
                     else
                     {
-                        dataMail.Rows.Add(may, "Chưa insert được máy hóa chất", prodat, dem.ToString());
+                        AddMailRow(may, "Chưa insert được máy hóa chất", prodat, dem);
 
                     }
                 }
                 else
                 {
-                    dataMail.Rows.Add(may, "Máy hôm qua không chạy", prodat, dem.ToString());
+                    AddMailRow(may, "Máy hôm qua không chạy", prodat, dem);
                 }
 
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                dataMail.Rows.Add(may, "Văng Exception ex hóa chất , máy có thể tắt ", DateTime.Now.AddDays(-1).ToString("yyyyMMdd"), "0");
+                AddMailRow(may, "Văng Exception ex hóa chất , máy có thể tắt ", DateTime.Now.AddDays(-1).ToString(TodayFormat), 0);
             }
 
 
@@ -446,7 +548,7 @@ namespace ChuyenlieulotbbNEW
 
 
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return "";
             }
@@ -458,12 +560,12 @@ namespace ChuyenlieulotbbNEW
             try
             {
                 int dem = 0;
-                string prodat1 = DateTime.Now.AddDays(-1.0).ToString("yyyyMMdd");
+                string prodat1 = DateTime.Now.AddDays(-1.0).ToString(TodayFormat);
                 string SQLVlevel = "SELECT ptype,rubno_7 FROM [InTem].[dbo].[rubnod_Ptype]";
-                cnnstr.TryGetValue("186", out var cnn186);
+                string cnn186 = GetConnectionString("186");
                 DataTable DTcheckvlevel = SqlCnn.ExecuteQuery(SQLVlevel, cnn186);
                 string sql_insert = "";
-                cnnstr.TryGetValue("33", out var cnn33);
+                string cnn33 = GetConnectionString("33");
                 string sql = "SELECT mesid,barcode,partno,weight,slipno,prodat,class,machno,indat,intime,usrno,some_sx  FROM [erp].[dbo].[prdebe] where machno ='" + may + "' and prodat  like '" + prodat1 + "%' order by indat , intime ";
                 //string sql = "SELECT mesid,barcode,partno,weight,slipno,prodat,class,machno,indat,intime,usrno,some_sx  FROM [erp].[dbo].[prdebe] where machno ='" + may + "' and partno like '755%' and mesid !='RL' and len(mesid) <14 and " +
                     //"barcode IN ('RR26309043','RR26228014','RC26123043','RD26120070','RR25C18033','RR25B19003','RC25423012','RB25422076','RR24613008','RR24611012','RR24611013','RC23713266','RR23708014','RC23629068','RC23629099','RC23629102')  order by indat , intime ";
@@ -486,20 +588,8 @@ namespace ChuyenlieulotbbNEW
                             string iNtime = dt.Rows[i]["intime"].ToString().Trim();
                             string uSrno = dt.Rows[i]["usrno"].ToString().Trim();
                             string sMesx = dt.Rows[i]["some_sx"].ToString().Trim();
-                            string level = "";
                             int? ptype = GetPtypeFromRubno7(DTcheckvlevel, pArtno);
-                            if (ptype.GetValueOrDefault() == 1)
-                            {
-                                level = "8";
-                            }
-                            if (ptype.GetValueOrDefault() == 2)
-                            {
-                                level = "7";
-                            }
-                            if (!ptype.HasValue)
-                            {
-                                level = ((barcode.Substring(0, 2) == "RR" || barcode.Substring(0, 2) == "RD") ? "5" : ((!(barcode.Substring(0, 2) == "RC")) ? "8" : "6"));
-                            }
+                            string level = GetRubberLevel(barcode, ptype);
                             DataTable dtDatangguyenlieu = new DataTable();
                             string sql186 = "SELECT  [machno],[idGrouplot] FROM [InTem].[dbo].[KEORE] where mesid ='" + mes + "'";
                             DataTable dtIDGrouplot = SqlCnn.ExecuteQuery(sql186, cnn186);
@@ -507,7 +597,7 @@ namespace ChuyenlieulotbbNEW
                             {
                                 string idGrouplot = dtIDGrouplot.Rows[0][1].ToString().Trim();
                                 string sqlPlan_id = "SELECT  [Plan_ID] FROM [mfns].[dbo].[Ppt_GroupLot]  where id='" + idGrouplot + "'";
-                                cnnstr.TryGetValue(may.Trim().Substring(may.Length - 2), out var cnnMay);
+                                string cnnMay = GetConnectionString(may.Trim().Substring(may.Length - 2));
                                 DataTable dtPlanid = SqlCnn.ExecuteQuery(sqlPlan_id, cnnMay);
                                 if (dtPlanid.Rows.Count > 0)
                                 {
@@ -575,40 +665,7 @@ namespace ChuyenlieulotbbNEW
                                         //    "SELECT DISTINCT * FROM c WHERE Serial_Num in ('" + meso1 + "','" + meso2 + "') " +
                                         //    "ORDER BY Serial_Num";
 
-                                        string query =
-                                        "WITH ranked_b AS ( " +
-                                        "  SELECT b.*, ROW_NUMBER() OVER ( " +
-                                        "    PARTITION BY b.Barcode, b.mater_code, b.Mater_Type " +
-                                        "    ORDER BY b.SaveTime DESC ) as rn " +
-                                        "  FROM [mfns].[dbo].[Ppt_BarCodeRep] b " +
-                                        "  WHERE b.Plan_ID = '" + plan_id + "' " +
-                                        "    AND SUBSTRING(b.mater_code, 1, 3) <> '680' " +
-                                        "), " +
-                                        "filtered_b AS ( " +
-                                        "  SELECT * FROM ranked_b WHERE rn = 1 " +
-                                        "), " +
-                                        "c AS ( " +
-                                        "  SELECT " +
-                                        "    b.Mater_Barcode, " +
-                                        "    b.Mater_Code, " +
-                                        "    a.real_weight, " +
-                                        "    CONVERT(varchar, CONVERT(date, b.SaveTime), 120) AS DateColumn, " +
-                                        "    CONVERT(varchar, CONVERT(time, b.SaveTime), 108) AS TimeColumnq, " +
-                                        "    b.Serial_Num, a.Barcode, b.Mater_Name, b.SaveTime " +
-                                        "  FROM [mfns].[dbo].[ppt_weigh] a " +
-                                        "  LEFT JOIN filtered_b b ON a.barcode = b.Barcode " +
-                                        "    AND b.mater_code = a.mater_code " +
-                                        "    AND a.weight_id = b.Mater_Type " +
-                                        "  WHERE a.barcode IS NOT NULL " +
-                                        ") " +
-                                        "SELECT DISTINCT * FROM c " +
-                                        "WHERE Mater_Barcode IS NOT NULL " +
-                                        "  AND ( " +
-                                        "    Mater_Code NOT LIKE '60%' " +
-                                        "    OR (Mater_Code LIKE '60%' AND Mater_Code = Mater_Name) " +
-                                        "  ) " +
-                                        "  AND Serial_Num IN ('" + meso1 + "','" + meso2 + "') " +
-                                        "ORDER BY SaveTime;";
+                                        string query = BuildMaterialQuery(plan_id, "('" + meso1 + "','" + meso2 + "')", false);
 
                                         dtDatangguyenlieu = SqlCnn.ExecuteQuery(query, cnnMay);
 
@@ -641,40 +698,7 @@ namespace ChuyenlieulotbbNEW
                                             //    "SELECT DISTINCT * FROM c WHERE Serial_Num in ('" + meso1 + "','" + meso2 + "') " +
                                             //    "ORDER BY Serial_Num";
 
-                                            string query =
-                                            "WITH ranked_b AS ( " +
-                                            "  SELECT b.*, ROW_NUMBER() OVER ( " +
-                                            "    PARTITION BY b.Barcode, b.mater_code, b.Mater_Type " +
-                                            "    ORDER BY b.SaveTime DESC ) as rn " +
-                                            "  FROM [mfns].[dbo].[Ppt_BarCodeRep] b " +
-                                            "  WHERE b.Plan_ID = '" + plan_id + "' " +
-                                            "    AND SUBSTRING(b.mater_code, 1, 3) <> '680' " +
-                                            "), " +
-                                            "filtered_b AS ( " +
-                                            "  SELECT * FROM ranked_b WHERE rn = 1 " +
-                                            "), " +
-                                            "c AS ( " +
-                                            "  SELECT " +
-                                            "    b.Mater_Barcode, " +
-                                            "    b.Mater_Code, " +
-                                            "    a.real_weight, " +
-                                            "    CONVERT(varchar, CONVERT(date, b.SaveTime), 120) AS DateColumn, " +
-                                            "    CONVERT(varchar, CONVERT(time, b.SaveTime), 108) AS TimeColumnq, " +
-                                            "    b.Serial_Num, a.Barcode, b.Mater_Name, b.SaveTime " +
-                                            "  FROM [mfns].[dbo].[ppt_weigh] a " +
-                                            "  LEFT JOIN filtered_b b ON a.barcode = b.Barcode " +
-                                            "    AND b.mater_code = a.mater_code " +
-                                            "    AND a.weight_id = b.Mater_Type " +
-                                            "  WHERE a.barcode IS NOT NULL " +
-                                            ") " +
-                                            "SELECT DISTINCT * FROM c " +
-                                            "WHERE Mater_Barcode IS NOT NULL " +
-                                            "  AND ( " +
-                                            "    Mater_Code NOT LIKE '60%' " +
-                                            "    OR (Mater_Code LIKE '60%' AND Mater_Code = Mater_Name) " +
-                                            "  ) " +
-                                            "  AND Serial_Num IN ('" + meso1 + "','" + meso2 + "') " +
-                                            "ORDER BY SaveTime;";
+                                            string query = BuildMaterialQuery(plan_id, "('" + meso1 + "','" + meso2 + "')", false);
 
                                             dtDatangguyenlieu = SqlCnn.ExecuteQuery(query, cnnMay);
 
@@ -693,7 +717,6 @@ namespace ChuyenlieulotbbNEW
 
                                     string m1 = meso1;
                                     string m2 = string.IsNullOrEmpty(meso2) ? "0" : meso2;
-                                    string barcodenguyenlieu = dtDatangguyenlieu.Rows[0]["Barcode"].ToString().Trim();
                                     string dataDau = "  SELECT a.[barcode],a.[mater_code], a.[equip_code], a.[set_weight], CONVERT(nvarchar(20),a.[weigh_time],120) as weigh_time ,a.[error_allow], a.[weigh_type], b.mater_name  FROM[mfns].[dbo].[ppt_weigh] a, [mfns].[dbo].[pmt_material] b where barcode in('" + plan_id + int.Parse(m1).ToString("000") + "','" + plan_id + int.Parse(m2).ToString("000") + "') and weigh_type='油料' and a.mater_code = b.mater_code  order by weigh_time asc ";
                                     DataTable dtDatangguyenlieuDau = SqlCnn.ExecuteQuery(dataDau, cnnMay);
                                     if (dtDatangguyenlieuDau.Rows.Count != 0)
@@ -703,13 +726,11 @@ namespace ChuyenlieulotbbNEW
                                         DateTime dat_point = DateTime.Parse(s_fromday);
                                         DateTime dat_check = DateTime.Parse(s_fromday);
                                         TimeSpan ts_check = new TimeSpan(6, 30, 0);
-                                        string s_from = "";
                                         dat_check = dat_check.Date + ts_check;
                                         if (dat_point <= dat_check)
                                         {
                                             dat_check = dat_check.AddDays(-1.0);
                                         }
-                                        s_from = dat_check.ToString("yyyy-MM-dd HH:mm:ss");
                                         string coal_code = "";
                                         for (int _icount = 0; _icount < dtDatangguyenlieuDau.Rows.Count; _icount++)
                                         {
@@ -737,12 +758,12 @@ namespace ChuyenlieulotbbNEW
                                                 }
                                                 else
                                                 {
-                                                    dr[0] = "Oil no data available";
+                                                    dr[0] = OilNoData;
                                                 }
                                             }
                                             else
                                             {
-                                                dr[0] = "Oil no data available";
+                                                dr[0] = OilNoData;
                                             }
                                             dr[1] = dtDatangguyenlieuDau.Rows[0][1].ToString().Trim();
                                             dr[2] = dtDatangguyenlieuDau.Rows[i_count]["set_weight"].ToString();
@@ -768,28 +789,28 @@ namespace ChuyenlieulotbbNEW
                         {
                         }
                     }
-                    cnnstr.TryGetValue("34", out var cnnInsert34);
+                    string cnnInsert34 = GetConnectionString("34");
                     bool a = SqlCnn.ExecuteNonQuery(sql_insert, cnnInsert34);
-                    cnnstr.TryGetValue("4", out var cnnInsert4);
+                    string cnnInsert4 = GetConnectionString("4");
                     bool b = SqlCnn.ExecuteNonQuery(sql_insert, cnnInsert4);
                     if (a & b)
                         //if (a )
                     {
-                        dataMail.Rows.Add(may, "Thành công máy BB ", prodat1, dem.ToString());
+                        AddMailRow(may, "Thành công máy BB ", prodat1, dem);
                     }
                     else
                     {
-                        dataMail.Rows.Add(may, "Insert Thất bại máy BB ", prodat1, dem.ToString());
+                        AddMailRow(may, "Insert Thất bại máy BB ", prodat1, dem);
                     }
                 }
                 else
                 {
-                    dataMail.Rows.Add(may, "Máy BB hôm qua không chạy ", prodat1, dem.ToString());
+                    AddMailRow(may, "Máy BB hôm qua không chạy ", prodat1, dem);
                 }
             }
             catch (Exception)
             {
-                dataMail.Rows.Add(may, "Văng Exception ex BB , máy có thể tắt ", DateTime.Now.AddDays(-1.0).ToString("yyyyMMdd"), "0");
+                AddMailRow(may, "Văng Exception ex BB , máy có thể tắt ", DateTime.Now.AddDays(-1.0).ToString(TodayFormat), 0);
             }
         }
 
@@ -856,7 +877,6 @@ namespace ChuyenlieulotbbNEW
             bool bResult = true;
             try
             {
-                string day = DateTime.Now.ToString("yyyyMMdd");
                 MailMessage em = new MailMessage();
                 em.From = new System.Net.Mail.MailAddress("kenda_kv@kenda.com.tw");
 
@@ -891,9 +911,8 @@ namespace ChuyenlieulotbbNEW
                 smtp.Dispose();
 
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                ex.ToString();
                 bResult = false;
             }
             return bResult;
@@ -906,15 +925,15 @@ namespace ChuyenlieulotbbNEW
                 {
 
                     int dem = 0;
-                    string prodat1 = DateTime.Now.AddDays(-1).ToString("yyyyMMdd");
+                    string prodat1 = DateTime.Now.AddDays(-1).ToString(TodayFormat);
 
                     //prodat1 = "20260325";
                     string SQLVlevel = "SELECT ptype,rubno_7 FROM [InTem].[dbo].[rubnod_Ptype]";
-                    cnnstr.TryGetValue("186", out string cnn186);
+                    string cnn186 = GetConnectionString("186");
                     DataTable DTcheckvlevel = SqlCnn.ExecuteQuery(SQLVlevel, cnn186);
 
                     string sql_insert = "";
-                    cnnstr.TryGetValue("33", out string cnn33);
+                    string cnn33 = GetConnectionString("33");
                     string sql = "SELECT mesid,barcode,partno,weight,slipno,prodat,class,machno,indat,intime,usrno,some_sx  FROM [erp].[dbo].[prdebe] where LEFT([mesid], 1) NOT IN ('V', 'E','R','') and machno ='" + may + "' and prodat  like '" + prodat1 + "%'  order by indat , intime ";
 
                    // string sql = "SELECT mesid,barcode,partno,weight,slipno,prodat,class,machno,indat,intime,usrno,some_sx  FROM [erp].[dbo].[prdebe] where machno ='" + may + "'  and " +
@@ -938,42 +957,15 @@ namespace ChuyenlieulotbbNEW
                                 string iNtime = dt.Rows[i]["intime"].ToString().Trim();
                                 string uSrno = dt.Rows[i]["usrno"].ToString().Trim();
                                 string sMesx = dt.Rows[i]["some_sx"].ToString().Trim();
-                                string level = "";
                                 int? ptype = GetPtypeFromRubno7(DTcheckvlevel, pArtno);
-                                if (ptype == 1)
-                                {
-                                    level = "8";
-                                }
-                                if (ptype == 2)
-                                {
-                                    level = "7";
-                                }
-                                if (ptype == null)
-                                {
-                                    if (barcode.Substring(0, 2) == "RR" || barcode.Substring(0, 2) == "RD")
-                                    {
-                                        level = "5";
-                                    }
-                                    else if (barcode.Substring(0, 2) == "RC")
-                                    {
-                                        level = "6";
-                                    }
-                                    //else if (barcode.Substring(0, 2) == "RB")
-                                    //{
-                                    //    level = "7";
-                                    //}
-                                    else
-                                    {
-                                        level = "8";
-                                    }
-                                }
+                                string level = GetRubberLevel(barcode, ptype);
 
 
                                 DataTable dtDatangguyenlieu = new DataTable();
 
 
                                 string sqlPlan_id = "SELECT  [Plan_ID] FROM [mfns].[dbo].[Ppt_GroupLot]  where MesPlanID='" + mes + "'";
-                                cnnstr.TryGetValue(may.Trim().Substring(may.Length - 2), out string cnnMay);
+                                string cnnMay = GetConnectionString(may.Trim().Substring(may.Length - 2));
                                 DataTable dtPlanid = SqlCnn.ExecuteQuery(sqlPlan_id, cnnMay);
                                 if (dtPlanid.Rows.Count > 0)
                                 {
@@ -987,46 +979,13 @@ namespace ChuyenlieulotbbNEW
                                                        .Select(x => x.Trim())
                                                        .ToList();
 
-                                    string sqlIn = listMe.Count > 0
-                                                ? "('" + string.Join("','", listMe) + "')"
-                                                : "()";
+                                    string sqlIn = BuildSqlIn(listMe);
                                     var listMeSau = new List<string>(listMe);
 
                                     for (int c = 0;c <= 2; c++)
                                     {
                                        
-                                        string query =
-                                        "WITH ranked_b AS ( " +
-                                        "  SELECT b.*, ROW_NUMBER() OVER ( " +
-                                        "    PARTITION BY b.Barcode, b.mater_code, b.Mater_Type " +
-                                        "    ORDER BY b.SaveTime DESC ) as rn " +
-                                        "  FROM [mfns].[dbo].[Ppt_BarCodeRep] b " +
-                                        "  WHERE b.Plan_ID = '" + plan_id + "' " +
-                                        "    AND SUBSTRING(b.mater_code, 1, 3) <> '680' " +
-                                        "), " +
-                                        "filtered_b AS ( " +
-                                        "  SELECT * FROM ranked_b WHERE rn = 1 " +
-                                        "), " +
-                                        "c AS ( " +
-                                        "  SELECT " +
-                                        "    b.Mater_Barcode, " +
-                                        "    b.Mater_Code, " +
-                                        "    a.real_weight, " +
-                                        "    CONVERT(varchar, CONVERT(date, b.SaveTime), 120) AS DateColumn, " +
-                                        "    CONVERT(varchar, CONVERT(time, b.SaveTime), 108) AS TimeColumnq, " +
-                                        "    b.Serial_Num, a.Barcode, b.Mater_Name, b.SaveTime, b.Mater_Type " +
-                                        "  FROM [mfns].[dbo].[ppt_weigh] a " +
-                                        "  LEFT JOIN filtered_b b ON a.barcode = b.Barcode " +
-                                        "    AND b.mater_code = a.mater_code " +
-                                        "    AND a.weight_id = b.Mater_Type " +
-                                        "  WHERE a.barcode IS NOT NULL " +
-                                        ") " +
-                                        "SELECT DISTINCT * FROM c " +
-                                        "WHERE Mater_Barcode IS NOT NULL " +
-                                        " AND (Mater_Code NOT LIKE '60%' OR (Mater_Code LIKE '60%' AND (Mater_Code = Mater_Name OR Mater_Type = 1))) " +
-                                      
-                                        "  AND Serial_Num IN " + sqlIn + " " +
-                                        "ORDER BY SaveTime;";
+                                        string query = BuildMaterialQuery(plan_id, sqlIn, true);
 
                                         dtDatangguyenlieu = SqlCnn.ExecuteQuery(query, cnnMay);
 
@@ -1039,9 +998,7 @@ namespace ChuyenlieulotbbNEW
                                             .Select(x => (int.Parse(x) - 1).ToString())
                                             .ToList();
 
-                                        sqlIn = listMe.Count > 0
-                                            ? "('" + string.Join("','", listMe) + "')"
-                                            : "()";
+                                        sqlIn = BuildSqlIn(listMe);
                                     }
                                     if (dtDatangguyenlieu.Rows.Count == 0)
                                     {
@@ -1049,46 +1006,13 @@ namespace ChuyenlieulotbbNEW
 
                                         listMe = new List<string>(listMeSau);
 
-                                        sqlIn = listMe.Count > 0
-                                            ? "('" + string.Join("','", listMe) + "')"
-                                            : "()";
+                                        sqlIn = BuildSqlIn(listMe);
 
                                         for (int c = 0; c <= 2; c++)
                                         {
                                             
 
-                                            string query =
-                                            "WITH ranked_b AS ( " +
-                                            "  SELECT b.*, ROW_NUMBER() OVER ( " +
-                                            "    PARTITION BY b.Barcode, b.mater_code, b.Mater_Type " +
-                                            "    ORDER BY b.SaveTime DESC ) as rn " +
-                                            "  FROM [mfns].[dbo].[Ppt_BarCodeRep] b " +
-                                            "  WHERE b.Plan_ID = '" + plan_id + "' " +
-                                            "    AND SUBSTRING(b.mater_code, 1, 3) <> '680' " +
-                                            "), " +
-                                            "filtered_b AS ( " +
-                                            "  SELECT * FROM ranked_b WHERE rn = 1 " +
-                                            "), " +
-                                            "c AS ( " +
-                                            "  SELECT " +
-                                            "    b.Mater_Barcode, " +
-                                            "    b.Mater_Code, " +
-                                            "    a.real_weight, " +
-                                            "    CONVERT(varchar, CONVERT(date, b.SaveTime), 120) AS DateColumn, " +
-                                            "    CONVERT(varchar, CONVERT(time, b.SaveTime), 108) AS TimeColumnq, " +
-                                            "    b.Serial_Num, a.Barcode, b.Mater_Name, b.SaveTime, b.Mater_Type " +
-                                            "  FROM [mfns].[dbo].[ppt_weigh] a " +
-                                            "  LEFT JOIN filtered_b b ON a.barcode = b.Barcode " +
-                                            "    AND b.mater_code = a.mater_code " +
-                                            "    AND a.weight_id = b.Mater_Type " +
-                                            "  WHERE a.barcode IS NOT NULL " +
-                                            ") " +
-                                            "SELECT DISTINCT * FROM c " +
-                                            "WHERE Mater_Barcode IS NOT NULL " +
-                                             " AND (Mater_Code NOT LIKE '60%' OR (Mater_Code LIKE '60%' AND (Mater_Code = Mater_Name OR Mater_Type = 1))) " +
-                                         
-                                            "  AND Serial_Num IN  " + sqlIn + " " +
-                                            "ORDER BY SaveTime;";
+                                            string query = BuildMaterialQuery(plan_id, sqlIn, true);
 
                                             dtDatangguyenlieu = SqlCnn.ExecuteQuery(query, cnnMay);
 
@@ -1099,9 +1023,7 @@ namespace ChuyenlieulotbbNEW
                                                 .Select(x => (int.Parse(x) + 1).ToString())
                                                 .ToList();
 
-                                            sqlIn = listMe.Count > 0
-                                                ? "('" + string.Join("','", listMe) + "')"
-                                                : "()";
+                                            sqlIn = BuildSqlIn(listMe);
                                         }
 
                                     }
@@ -1110,12 +1032,9 @@ namespace ChuyenlieulotbbNEW
                                     var listBarcode = listMe
                                                 .Select(x => plan_id + int.Parse(x).ToString("000"))
                                                 .ToList();
-                                    string sqlBarcodeIn = listBarcode.Count > 0
-                                                ? "('" + string.Join("','", listBarcode) + "')"
-                                                : "()";
+                                    string sqlBarcodeIn = BuildSqlIn(listBarcode);
 
 
-                                    string barcodenguyenlieu = dtDatangguyenlieu.Rows[0]["Barcode"].ToString().Trim();
                                     string dataDau = "  SELECT a.[barcode],a.[mater_code], a.[equip_code], a.[set_weight], CONVERT(nvarchar(20),a.[weigh_time],120) as weigh_time ,a.[error_allow], a.[weigh_type]," +
                                         " b.mater_name  FROM[mfns].[dbo].[ppt_weigh] a, [mfns].[dbo].[pmt_material] b where barcode in " + sqlBarcodeIn + " " +
                                         " and weigh_type='油料' and a.mater_code = b.mater_code  order by weigh_time asc ";
@@ -1126,16 +1045,13 @@ namespace ChuyenlieulotbbNEW
                                         DateTime dat_point = DateTime.Parse(s_fromday);
                                         DateTime dat_check = DateTime.Parse(s_fromday);
                                         TimeSpan ts_check = new TimeSpan(06, 30, 00);
-                                        string s_from = "";
-
                                         dat_check = dat_check.Date + ts_check;
                                         if (dat_point <= dat_check)
                                         {
                                             dat_check = dat_check.AddDays(-1);
                                         }
-                                        s_from = dat_check.ToString("yyyy-MM-dd HH:mm:ss");
                                      
-                                        string coal_code = "";
+                                        List<string> coalCodes = new List<string>();
 
                                         for (int _icount = 0; _icount < dtDatangguyenlieuDau.Rows.Count; _icount++)
                                         {
@@ -1143,17 +1059,9 @@ namespace ChuyenlieulotbbNEW
                                             {
                                                 string materCode = dtDatangguyenlieuDau.Rows[_icount]["mater_code"].ToString().Trim();
 
-                                                // Kiểm tra nếu chưa có thì mới thêm vào
-                                                if (!coal_code.Contains($"'{materCode}'"))
+                                                if (!coalCodes.Contains(materCode))
                                                 {
-                                                    if (coal_code == "")
-                                                    {
-                                                        coal_code = $"'{materCode}'";
-                                                    }
-                                                    else
-                                                    {
-                                                        coal_code += $",'{materCode}'";
-                                                    }
+                                                    coalCodes.Add(materCode);
                                                 }
                                             }
                                         }
@@ -1166,7 +1074,7 @@ namespace ChuyenlieulotbbNEW
                                      FROM [mfns].[dbo].[Ppt_Oil]
                                      WHERE SaveTime <= '" + s_fromday + @"'
                                        AND Mater_Type = '0'
-                                       AND Mater_Code IN (" + coal_code + @")
+                                       AND Mater_Code IN " + BuildSqlIn(coalCodes) + @"
                                  ) t
                                  WHERE rn = 1";
 
@@ -1199,22 +1107,20 @@ namespace ChuyenlieulotbbNEW
 
                                             if (barcodeMap.TryGetValue(dtDatangguyenlieuDau.Rows[i_count]["mater_code"].ToString().Trim(), out var matchedBarcode) && !string.IsNullOrEmpty(matchedBarcode))
                                             {
-                                                // an toàn độ dài: cần >= 13 để Substring(7,6) hợp lệ (và có 5 ký tự đầu là mã)
                                                 if (matchedBarcode.Length >= 13 && matchedBarcode.StartsWith(dtDatangguyenlieuDau.Rows[i_count]["mater_code"].ToString().Trim(), StringComparison.OrdinalIgnoreCase))
                                                 {
-                                                    dr[0] = matchedBarcode;                             // Mater barcode -- Coal
-                                                                                                        // batchno
+                                                    dr[0] = matchedBarcode;
                                                     dr[1] = dtDatangguyenlieuDau.Rows[i_count]["mater_code"].ToString().Trim();
                                                 }
                                                 else
                                                 {
-                                                    dr[0] = "Oil no data available";          // batchno fallback
+                                                    dr[0] = OilNoData;
                                                     dr[1] = dtDatangguyenlieuDau.Rows[i_count]["mater_code"].ToString().Trim();
                                                 }
                                             }
                                             else
                                             {
-                                                dr[0] = "Oil no data available";              // batchno fallback
+                                                dr[0] = OilNoData;
                                                 dr[1] = dtDatangguyenlieuDau.Rows[i_count]["mater_code"].ToString().Trim();
                                             }
 
@@ -1222,10 +1128,10 @@ namespace ChuyenlieulotbbNEW
 
 
 
-                                            dr[2] = dtDatangguyenlieuDau.Rows[i_count]["set_weight"].ToString(); // set weight
+                                            dr[2] = dtDatangguyenlieuDau.Rows[i_count]["set_weight"].ToString();
                                             dr[3] = dtDatangguyenlieuDau.Rows[i_count]["weigh_time"].ToString().Trim().Substring(0, 10);
                                             dr[4] = dtDatangguyenlieuDau.Rows[i_count]["weigh_time"].ToString().Trim().Substring(11);
-                                            dr[5] = int.Parse(dtDatangguyenlieuDau.Rows[i_count]["barcode"].ToString().Trim().Substring(dtDatangguyenlieuDau.Rows[i_count]["barcode"].ToString().Trim().Length - 2, 2));// serial num
+                                            dr[5] = int.Parse(dtDatangguyenlieuDau.Rows[i_count]["barcode"].ToString().Trim().Substring(dtDatangguyenlieuDau.Rows[i_count]["barcode"].ToString().Trim().Length - 2, 2));
                                             dr[6] = dtDatangguyenlieuDau.Rows[i_count]["barcode"].ToString();
                                             dtDatangguyenlieu.Rows.Add(dr);
                                         }
@@ -1250,30 +1156,30 @@ namespace ChuyenlieulotbbNEW
                             catch { continue; }
 
                         }
-                        cnnstr.TryGetValue("34", out string cnnInsert34);
+                        string cnnInsert34 = GetConnectionString("34");
                         bool a = SqlCnn.ExecuteNonQuery(sql_insert, cnnInsert34);
-                        cnnstr.TryGetValue("4", out string cnnInsert4);
+                        string cnnInsert4 = GetConnectionString("4");
                         bool b = SqlCnn.ExecuteNonQuery(sql_insert, cnnInsert4);
                         if (a && b)
                             //if (a )
                         {
-                            dataMail.Rows.Add(may, "(Mesmoi)Thành công máy BB ", prodat1, dem.ToString());
+                            AddMailRow(may, "(Mesmoi)Thành công máy BB ", prodat1, dem);
                         }
                         else
                         {
-                            dataMail.Rows.Add(may, "(Mesmoi)Insert Thất bại máy BB ", prodat1, dem.ToString());
+                            AddMailRow(may, "(Mesmoi)Insert Thất bại máy BB ", prodat1, dem);
                         }
                     }
                     else
                     {
-                        dataMail.Rows.Add(may, "(Mesmoi)Máy BB hôm qua không chạy ", prodat1, dem.ToString());
+                        AddMailRow(may, "(Mesmoi)Máy BB hôm qua không chạy ", prodat1, dem);
                     }
 
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                dataMail.Rows.Add(may, "(Mesmoi)Văng Exception ex BB , máy có thể tắt ", DateTime.Now.AddDays(-1).ToString("yyyyMMdd"), "0");
+                AddMailRow(may, "(Mesmoi)Văng Exception ex BB , máy có thể tắt ", DateTime.Now.AddDays(-1).ToString(TodayFormat), 0);
             }
 
 
