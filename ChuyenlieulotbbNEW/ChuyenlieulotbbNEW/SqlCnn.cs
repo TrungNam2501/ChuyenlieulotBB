@@ -7,7 +7,7 @@ namespace ChuyenlieulotbbNEW
 {
     public class SqlCnn
     {
-        private const int DefaultCommandTimeoutSeconds = 6000;
+        private const int NonQueryCommandTimeoutSeconds = 6000;
 
         public static DataTable ExecuteQuery(string query, string ConnectionString, CommandType commandType = CommandType.Text,
            Dictionary<string, object> param = null)
@@ -17,7 +17,7 @@ namespace ChuyenlieulotbbNEW
                 try
                 {
                     conn.Open();
-                    using (SqlCommand cmd = CreateCommand(query, conn, commandType, param))
+                    using (SqlCommand cmd = CreateCommand(query, conn, commandType, param, null))
                     using (SqlDataAdapter da = new SqlDataAdapter(cmd))
                     {
                         DataTable dt = new DataTable();
@@ -45,7 +45,7 @@ namespace ChuyenlieulotbbNEW
                 try
                 {
                     conn.Open();
-                    using (SqlCommand cmd = CreateCommand(query, conn, commandType, param))
+                    using (SqlCommand cmd = CreateCommand(query, conn, commandType, param, NonQueryCommandTimeoutSeconds))
                     {
                         int affectedRows = cmd.ExecuteNonQuery();
                         return affectedRows > 0;
@@ -75,13 +75,18 @@ namespace ChuyenlieulotbbNEW
             string query,
             SqlConnection conn,
             CommandType commandType,
-            Dictionary<string, object> param)
+            Dictionary<string, object> param,
+            int? commandTimeout)
         {
             SqlCommand cmd = new SqlCommand(query, conn)
             {
-                CommandType = commandType,
-                CommandTimeout = DefaultCommandTimeoutSeconds
+                CommandType = commandType
             };
+
+            if (commandTimeout.HasValue)
+            {
+                cmd.CommandTimeout = commandTimeout.Value;
+            }
 
             AddParameters(cmd, param);
             return cmd;

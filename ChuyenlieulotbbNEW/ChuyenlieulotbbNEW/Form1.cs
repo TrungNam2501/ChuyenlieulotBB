@@ -179,9 +179,12 @@ namespace ChuyenlieulotbbNEW
             return "8";
         }
 
-        private static string BuildMaterialQuery(string planId, string sqlIn, bool allowMaterTypeOil)
+        private static string BuildMaterialQuery(string planId, string sqlIn, bool includeMaterType)
         {
-            string oilMaterialCondition = allowMaterTypeOil
+            string materTypeColumn = includeMaterType
+                ? ", b.Mater_Type "
+                : " ";
+            string oilMaterialCondition = includeMaterType
                 ? " AND (Mater_Code NOT LIKE '60%' OR (Mater_Code LIKE '60%' AND (Mater_Code = Mater_Name OR Mater_Type = 1))) "
                 : "  AND (     Mater_Code NOT LIKE '60%'     OR (Mater_Code LIKE '60%' AND Mater_Code = Mater_Name)   ) ";
 
@@ -204,7 +207,7 @@ namespace ChuyenlieulotbbNEW
                 "    a.real_weight, " +
                 "    CONVERT(varchar, CONVERT(date, b.SaveTime), 120) AS DateColumn, " +
                 "    CONVERT(varchar, CONVERT(time, b.SaveTime), 108) AS TimeColumnq, " +
-                "    b.Serial_Num, a.Barcode, b.Mater_Name, b.SaveTime, b.Mater_Type " +
+                "    b.Serial_Num, a.Barcode, b.Mater_Name, b.SaveTime" + materTypeColumn +
                 "  FROM [mfns].[dbo].[ppt_weigh] a " +
                 "  LEFT JOIN filtered_b b ON a.barcode = b.Barcode " +
                 "    AND b.mater_code = a.mater_code " +
